@@ -1,0 +1,153 @@
+---
+title: "Practical Machine Learning Course Project"
+output: html_document
+---
+
+
+# Introduction
+This report describes the data cleaning and model building process for the "Practical Machine Learning" course project. The dataset[1] origins from the field of Human Activity Recognition (HAR). More specifically, six participants were asked to perform barbell lifts in five different ways, where one was correct and the other four represented the most common errors in performing this exercise. The task for this assignment is to build a model from this data to predict for future measurements of the exercise in which way it was performed. Equipped with measurement gear this could help athletes optimize their training.
+This report will describe the building of three models, compare them based on their accuracy, introduce cross-validation exemplarily on the best of these models and finally apply it to the assignment test dataset. 
+
+# Data
+
+## Data Loading
+First, the data is loaded. _rawData_ represents the dataset, _toPredict_ the 20 measurements whose class shall be predicted based on the model. Also, necessary libraries for further steps are loaded, the seed is set and R configured for parallel execution.
+
+```{r, echo=TRUE, message=FALSE}
+# Load libraries
+library(caret)
+library(ggplot2)
+library(doParallel)
+
+# Load data
+setwd("C:/Users/michael/Practical Machine Learning")
+rawData = read.csv("pml-training.csv")
+toPredict = read.csv("pml-testing.csv")
+
+# Set globals
+set.seed(1000)
+registerDoParallel(cores=2)
+```
+
+## Data Cleaning
+Prior to building any model, the dataset should be cleaned. Exploratory data analysis finds that the first 7 columns contain metadata about the measurements and thus are not of any predictory value. 
+
+```{r, echo=TRUE, message=FALSE}
+metadataColumns = names(data)[0:7]
+data <- rawData[,!(names(rawData) %in% metadataColumns)]
+```
+
+Further, many columns have almost only NAs and can therefore also be dropped. I set the threshold to be 90% for removing a column.
+
+```{r, echo=TRUE, message=FALSE}
+percentage_NA <- apply(data, 2, function(x) sum(is.na(x))/length(x))
+drop_ids <- which(percentage_NA > 0.90)
+data <- data[, -drop_ids]
+percentage_empty <- apply(data, 2, function(x) sum(x=="")/length(x))
+drop_ids <- which(percentage_empty > 0.90)
+data <- data[, -drop_ids]
+```
+
+These two steps bring down the dataset from 160 to 53 columns.
+
+## Data Splitting
+The dataset is split into a training set, containing 80% of the total data, and a test set, containing the other 20%.
+
+```{r, echo=TRUE}
+inTrain <- createDataPartition(data$classe, p=0.8, list=FALSE)
+train <- data[inTrain,]
+test <- data[-inTrain,]
+```
+
+# Model Building
+
+## Method 1: Simple Decision Tree
+The first model is a simple decision tree created with the following code.
+
+```{r, echo=TRUE, eval=TRUE, message=FALSE}
+model1 <- train(classe ~ ., method="rpart", data=train)
+test$decTreePred <- predict(model1, newdata=test)
+```
+
+## Method 2: Random Forest
+The second model is a random forest. The dataset is too complex for the machine this assignment was performed on to train a random forest on the whole training set with the default parameters. Given the generally higher accuracy of random forests over decision trees, it is warranted to create a second, smaller test set to build the random forest. The training set here consists of 15% of the total dataset.
+
+```{r, echo=TRUE, eval=TRUE, message=FALSE}
+inSmallTrain <- createDataPartition(data$classe, p=0.15, list=FALSE)
+trainSmall <- data[inSmallTrain,]
+model2 <- train(classe ~ ., method="rf", prox=TRUE, data=trainSmall)
+test$rndForestPred <- predict(model2, newdata=test)
+```
+
+## Method 3: Generalized Linear Model
+Finally, as a third method, a generalized linear model is fit. Due to its computational complexity the smaller training set is used again.
+
+```{r, echo=TRUE, eval=TRUE, message=FALSE}
+model4 <- train(classe ~ ., method="gbm", data=trainSmall)
+test$glmPred <- predict(model4, newdata=test)
+```
+
+## Model Comparison
+A standard metric for comparing the performance of different models is their accuracy on the test set. The accuracy for the models trained above is as follows.
+
+Method 1: Decision Tree
+```{r, echo=FALSE}
+confusionMatrix(table(test$classe, test$decTreePred))$overall
+```
+
+Method 2: Random Forest
+```{r, echo=FALSE}
+confusionMatrix(table(test$classe, test$rndForestPred))$overall
+```
+
+Method 3: Generalized Linear Model
+```{r, echo=FALSE}
+confusionMatrix(table(test$classe, test$glmPred))$overall
+```
+
+Both random forest and generalized linear model have an accuracy of almost 1, so we arbitrarily choose random forest for exemplifying crossvalidation. Of course, it would be preferable to perform crossvalidation on all models for comparison, but for the purpose of this assignment given both model's accuracies the approach is sufficient.
+
+## Crossvalidation
+Using a train_control object it is easily possible to perform a crossvalidation with the caret package. In this case, k=10 is chosen, i.e. the training set is split into 10 folds.
+
+```{r, echo=TRUE}
+train_control <- trainControl(method="cv", number=10)
+model3 <- train(classe ~ ., method="rf", prox=TRUE, data=trainSmall, trControl=train_control)
+test$rndForestPredCV <- predict(model3, newdata=test)
+```
+
+The accuracy is:
+```{r, echo=FALSE}
+confusionMatrix(table(test$classe, test$rndForestPredCV))$overall
+```
+
+In this case, crossvalidation does not further improve accuracy.
+
+# Submission prediction
+Finally, for this assignment, the class of 20 measurements has to be predicted which are stored in the _toPredict_ dataframe. For this, the pml\_write\_files method provided is used.
+
+```{r, echo=TRUE}
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n) {
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+```
+```{r, echo=TRUE}
+toPredict$prediction <- predict(model2, newdata=toPredict)
+pml_write_files(toPredict$prediction)
+```
+
+The model has a 100% accuracy on this test set, i.e. it categorizes all 20 measurements correctly.
+
+
+# Summary
+For this assignment, in total three different classifiers have been evaluated. The best performing was a random forest which thus has been chosen to predict the 20 test entries for which a 100% accuracy has been achieved. A shortcoming of this solution is that only a small subset of the data has been used for training purposes and only for the best performing model crossvalidation was performed in order to reduce computation time. However, this seems warranted given the high accuracy of the model and the scope of this project.
+
+## References
+[1]: Ugulino, W.; Cardador, D.; Vega, K.; Velloso, E.; Milidiu, R.; Fuks, H. Wearable Computing: Accelerometers' Data Classification of Body Postures and Movements. Proceedings of 21st Brazilian Symposium on Artificial Intelligence. Advances in Artificial Intelligence - SBIA 2012. In: Lecture Notes in Computer Science. , pp. 52-61. Curitiba, PR: Springer Berlin / Heidelberg, 2012. ISBN 978-3-642-34458-9. DOI: 10.1007/978-3-642-34459-6_6. 
+
+Read more: http://groupware.les.inf.puc-rio.br/har#ixzz3iOE68Yv9
+
